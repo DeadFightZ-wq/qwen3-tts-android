@@ -551,7 +551,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val temporaryWav = File(voiceDir, "import-pending-${System.currentTimeMillis()}.wav")
                     try {
                         val normalized = AudioNormalizer.normalize(
-                            context = getApplication(),
+                            context = getApplication<Application>(),
                             uri = uri,
                             outputFile = temporaryWav,
                         )
@@ -1307,7 +1307,7 @@ private fun VoicesScreen(viewModel: MainViewModel) {
                     Text("Import audio")
                 }
                 Text(
-                    "Choose a local WAV, MP3, M4A or OGG file. Audio is converted on this device.",
+                    "Choose a local WAV, MP3, M4A or OGG file (up to 2 minutes). Audio is converted on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
