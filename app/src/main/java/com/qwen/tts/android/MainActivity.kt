@@ -1311,6 +1311,13 @@ private fun VoicesScreen(viewModel: MainViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (state.busy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(state.status, style = MaterialTheme.typography.bodySmall)
+                }
+                state.error?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
                 if (state.supportsCloning == false) {
                     Text(
                         "The current model does not expose voice cloning capabilities.",
