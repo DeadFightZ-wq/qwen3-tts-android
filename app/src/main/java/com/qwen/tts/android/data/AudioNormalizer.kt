@@ -56,6 +56,43 @@ internal object AudioNormalizer {
             }
 
             extractor.selectTrack(audioTrackIndex)
+
+            // WAV/PCM tracks are already decoded by MediaExtractor. They must not
+            // be passed to MediaCodec as "audio/raw", because raw PCM has no decoder.
+            if (mime == "audio/raw") {
+                val rawSampleRate = inputFormat.getIntegerOrDefault(MediaFormat.KEY_SAMPLE_RATE, 0)
+                val rawChannels = inputFormat.getIntegerOrDefault(MediaFormat.KEY_CHANNEL_COUNT, 0)
+                val rawEncoding = inputFormat.getIntegerOrDefault(
+                    MediaFormat.KEY_PCM_ENCODING,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                )
+                validateOutputFormat(rawSampleRate, rawChannels, rawEncoding)
+
+                val monoSamples = FloatArrayBuilder()
+                val rawBuffer = java.nio.ByteBuffer.allocateDirect(1024 * 1024)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                while (true) {
+                    rawBuffer.clear()
+                    val sampleSize = extractor.readSampleData(rawBuffer, 0)
+                    if (sampleSize < 0) break
+                    if (sampleSize > rawBuffer.capacity()) {
+                        error("The selected WAV contains an unusually large PCM sample.")
+                    }
+                    rawBuffer.position(0)
+                    rawBuffer.limit(sampleSize)
+                    appendMonoPcm(
+                        pcm = rawBuffer.slice().order(ByteOrder.LITTLE_ENDIAN),
+                        channelCount = rawChannels,
+                        encoding = rawEncoding,
+                        sampleRate = rawSampleRate,
+                        destination = monoSamples,
+                    )
+                    extractor.advance()
+                }
+
+                return writeNormalizedAudio(outputFile, monoSamples.toArray(), rawSampleRate)
+            }
+
             decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(inputFormat, null, null, 0)
             decoder.start()
@@ -162,22 +199,7 @@ internal object AudioNormalizer {
                 }
             }
 
-            if (sampleRate <= 0 || monoSamples.size == 0) {
-                error("No decodable audio samples were found in the selected file.")
-            }
-
-            val normalizedSamples = resample(monoSamples.toArray(), sampleRate, TARGET_SAMPLE_RATE)
-            if (normalizedSamples.isEmpty()) {
-                error("The selected audio does not contain enough samples to create a voice profile.")
-            }
-
-            outputFile.parentFile?.mkdirs()
-            writeWav(outputFile, normalizedSamples, TARGET_SAMPLE_RATE)
-
-            return NormalizedVoiceAudio(
-                file = outputFile,
-                durationMillis = normalizedSamples.size * 1_000L / TARGET_SAMPLE_RATE,
-            )
+            return writeNormalizedAudio(outputFile, monoSamples.toArray(), sampleRate)
         } catch (throwable: Throwable) {
             runCatching { outputFile.delete() }
             throw throwable
@@ -188,6 +210,28 @@ internal object AudioNormalizer {
             runCatching { decoder?.release() }
             runCatching { extractor.release() }
         }
+    }
+
+    private fun writeNormalizedAudio(
+        outputFile: File,
+        monoSamples: FloatArray,
+        sourceSampleRate: Int,
+    ): NormalizedVoiceAudio {
+        if (sourceSampleRate <= 0 || monoSamples.isEmpty()) {
+            error("No decodable audio samples were found in the selected file.")
+        }
+
+        val normalizedSamples = resample(monoSamples, sourceSampleRate, TARGET_SAMPLE_RATE)
+        if (normalizedSamples.isEmpty()) {
+            error("The selected audio does not contain enough samples to create a voice profile.")
+        }
+
+        outputFile.parentFile?.mkdirs()
+        writeWav(outputFile, normalizedSamples, TARGET_SAMPLE_RATE)
+        return NormalizedVoiceAudio(
+            file = outputFile,
+            durationMillis = normalizedSamples.size * 1_000L / TARGET_SAMPLE_RATE,
+        )
     }
 
     private fun validateOutputFormat(sampleRate: Int, channels: Int, encoding: Int) {
