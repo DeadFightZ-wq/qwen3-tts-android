@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build Optimized APK
 
 on:
   push:
@@ -20,12 +20,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-debug-apk-${{ github.ref }}
+  group: build-optimized-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Compile arm64 Debug APK
+    name: Compile arm64 Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -57,20 +57,20 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Debug APK
+      - name: Build Optimized Release APK
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon :app:assembleDebug
+          ./gradlew --no-daemon :app:assembleRelease
 
       - name: Prepare APK artifact
         run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/qwen3-tts-android-debug-arm64-v8a.apk
+          cp app/build/outputs/apk/release/app-release.apk artifacts/qwen3-tts-android-optimized-arm64-v8a.apk
           sha256sum artifacts/*.apk | tee artifacts/SHA256SUMS.txt
           {
             echo "Commit: $GITHUB_SHA"
             echo "Branch: $GITHUB_REF_NAME"
-            echo "Build: Debug"
+            echo "Build: Release (debug-signed)"
             echo "ABI: arm64-v8a"
           } > artifacts/BUILD_INFO.txt
           ls -lh artifacts
@@ -78,7 +78,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: qwen3-tts-android-debug-arm64-v8a
+          name: qwen3-tts-android-optimized-arm64-v8a
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
