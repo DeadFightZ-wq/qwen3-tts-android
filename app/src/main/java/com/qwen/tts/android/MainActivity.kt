@@ -622,6 +622,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         busy = false,
                         selectedVoiceId = voice.voiceId,
                         status = successStatus,
+                        snackbarMessage = successStatus,
                         error = null,
                     )
                 }
