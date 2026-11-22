@@ -5,7 +5,7 @@ Android app for local, on-device text-to-speech with Qwen3-TTS and
 
 Qwen3 TTS Android runs the speech model on the device, stores generated audio
 locally, and provides a compact workflow for creating voice profiles from
-microphone recordings.
+microphone recordings or imported audio references.
 
 ## Screenshots
 
@@ -22,7 +22,8 @@ microphone recordings.
 - On-device Qwen3-TTS synthesis through the `qwen3-tts.cpp` native runtime
 - Jetpack Compose UI with Studio, Voices, History, and Settings screens
 - Q4_K_M model download and loading from app-private storage
-- Voice profiles with microphone recording and speaker embedding extraction
+- Voice profiles from microphone recordings or imported WAV, MP3, M4A, and OGG references
+- Imported audio is decoded and normalized on-device to mono 24 kHz PCM WAV before speaker embedding extraction
 - Local generation history with playback, stop, delete, and WAV export
 - CPU runtime path for Android devices
 - Progress output with elapsed time, estimated audio length, and history-based ETA

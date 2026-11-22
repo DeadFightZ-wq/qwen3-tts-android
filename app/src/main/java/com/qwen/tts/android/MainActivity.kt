@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -93,6 +94,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.qwen.tts.android.data.AudioNormalizer
 import com.qwen.tts.android.data.VoiceRecorder
 import com.qwen.tts.android.data.db.GenerationEntity
 import com.qwen.tts.android.data.db.QwenDatabase
@@ -517,64 +519,125 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopVoiceRecordingAndCreate(name: String) {
-        val trimmedName = name.trim().ifBlank { "Voice ${voices.value.size + 1}" }
         val result = recorder.stop() ?: return
+        val trimmedName = name.trim().ifBlank { "Voice ${voices.value.size + 1}" }
         viewModelScope.launch {
             startBusy(status = "Creating voice embedding")
             val created = runCatching {
                 withContext(Dispatchers.IO) {
-                    val native = ensureEngineLoaded(selectedVariant())
-                    val caps = native.getModelCapabilities()
-                    if (caps?.supportsCloning == false) {
-                        error("The loaded model does not expose a speaker encoder.")
+                    try {
+                        createVoiceProfile(trimmedName, result.file, result.durationMillis)
+                    } finally {
+                        runCatching { result.file.delete() }
                     }
-
-                    val voiceId = "voice-${System.currentTimeMillis()}"
-                    val targetDir = File(voiceDir, voiceId).apply { mkdirs() }
-                    val reference = File(targetDir, "reference.wav")
-                    result.file.copyTo(reference, overwrite = true)
-                    runCatching { result.file.delete() }
-
-                    val embedding = File(targetDir, "speaker.json")
-                    if (!native.extractSpeakerEmbedding(reference.absolutePath, embedding.absolutePath)) {
-                        error(native.getLastError() ?: "Speaker embedding extraction failed")
-                    }
-
-                    VoiceProfileEntity(
-                        voiceId = voiceId,
-                        name = makeUniqueVoiceName(trimmedName),
-                        referenceWavPath = reference.absolutePath,
-                        speakerEmbeddingPath = embedding.absolutePath,
-                        durationMillis = result.durationMillis,
-                    )
                 }
             }
-
-            created.fold(
-                onSuccess = { voice ->
-                    dao.insertVoice(voice)
-                    stopBusyTicker()
-                    _uiState.update {
-                        it.copy(
-                            busy = false,
-                            selectedVoiceId = voice.voiceId,
-                            status = "Voice created",
-                            error = null,
-                        )
-                    }
-                },
-                onFailure = { throwable ->
-                    stopBusyTicker()
-                    _uiState.update {
-                        it.copy(
-                            busy = false,
-                            status = "Voice creation failed",
-                            error = throwable.message ?: "Voice creation failed",
-                        )
-                    }
-                },
+            finishVoiceCreation(
+                created = created,
+                successStatus = "Voice created",
+                failureStatus = "Voice creation failed",
             )
         }
+    }
+
+    fun importVoiceAudio(name: String, uri: Uri) {
+        if (_uiState.value.busy || recorderState.value.isRecording) return
+        val trimmedName = name.trim().ifBlank { "Voice ${voices.value.size + 1}" }
+
+        viewModelScope.launch {
+            startBusy(status = "Importing and preparing reference audio")
+            val created = runCatching {
+                withContext(Dispatchers.IO) {
+                    val temporaryWav = File(voiceDir, "import-pending-${System.currentTimeMillis()}.wav")
+                    try {
+                        val normalized = AudioNormalizer.normalize(
+                            context = getApplication<Application>(),
+                            uri = uri,
+                            outputFile = temporaryWav,
+                        )
+                        createVoiceProfile(trimmedName, normalized.file, normalized.durationMillis)
+                    } finally {
+                        runCatching { temporaryWav.delete() }
+                    }
+                }
+            }
+            finishVoiceCreation(
+                created = created,
+                successStatus = "Voice imported",
+                failureStatus = "Audio import failed",
+            )
+        }
+    }
+
+    private fun createVoiceProfile(
+        name: String,
+        sourceWav: File,
+        durationMillis: Long,
+    ): VoiceProfileEntity {
+        val native = ensureEngineLoaded(selectedVariant())
+        val capabilities = native.getModelCapabilities()
+        if (capabilities?.supportsCloning == false) {
+            error("The loaded model does not expose a speaker encoder.")
+        }
+
+        val voiceId = "voice-${System.currentTimeMillis()}"
+        val targetDir = File(voiceDir, voiceId)
+        if (!targetDir.mkdirs() && !targetDir.isDirectory) {
+            error("Could not create the voice profile directory.")
+        }
+
+        try {
+            val reference = File(targetDir, "reference.wav")
+            sourceWav.copyTo(reference, overwrite = true)
+
+            val embedding = File(targetDir, "speaker.json")
+            if (!native.extractSpeakerEmbedding(reference.absolutePath, embedding.absolutePath)) {
+                error(native.getLastError() ?: "Speaker embedding extraction failed")
+            }
+
+            return VoiceProfileEntity(
+                voiceId = voiceId,
+                name = makeUniqueVoiceName(name),
+                referenceWavPath = reference.absolutePath,
+                speakerEmbeddingPath = embedding.absolutePath,
+                durationMillis = durationMillis,
+            )
+        } catch (throwable: Throwable) {
+            runCatching { targetDir.deleteRecursively() }
+            throw throwable
+        }
+    }
+
+    private suspend fun finishVoiceCreation(
+        created: Result<VoiceProfileEntity>,
+        successStatus: String,
+        failureStatus: String,
+    ) {
+        created.fold(
+            onSuccess = { voice ->
+                dao.insertVoice(voice)
+                stopBusyTicker()
+                _uiState.update {
+                    it.copy(
+                        busy = false,
+                        selectedVoiceId = voice.voiceId,
+                        status = successStatus,
+                        snackbarMessage = successStatus,
+                        error = null,
+                    )
+                }
+            },
+            onFailure = { throwable ->
+                stopBusyTicker()
+                _uiState.update {
+                    it.copy(
+                        busy = false,
+                        status = failureStatus,
+                        error = throwable.message ?: failureStatus,
+                    )
+                }
+            },
+        )
     }
 
     fun cancelVoiceRecording() {
@@ -1173,6 +1236,13 @@ private fun VoicesScreen(viewModel: MainViewModel) {
         if (granted) viewModel.startVoiceRecording()
     }
 
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            viewModel.importVoiceAudio(voiceName, uri)
+            voiceName = ""
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1226,6 +1296,28 @@ private fun VoicesScreen(viewModel: MainViewModel) {
                     ) {
                         Text("Cancel")
                     }
+                }
+
+                OutlinedButton(
+                    onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                    enabled = !state.busy && !recorderState.isRecording,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Import audio")
+                }
+                Text(
+                    "Choose a local WAV, MP3, M4A or OGG file (up to 2 minutes). Audio is converted on this device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (state.busy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(state.status, style = MaterialTheme.typography.bodySmall)
+                }
+                state.error?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
                 if (state.supportsCloning == false) {
                     Text(
